@@ -18,8 +18,8 @@ client = oandapyV20.API(access_token=config['oanda']['api_key'], environment='li
 
 # request candles
 candle_data = instruments.InstrumentsCandles(
-    instrument="AUD_CAD", 
-    params={"count": "10", "granularity": "H1"}
+    instrument="USD_CAD", 
+    params={"count": "20", "granularity": "H1"}
 )
 client.request(candle_data)
 candles = candle_data.response['candles']
@@ -31,6 +31,19 @@ for candle in candles:
         for i in OHLC:
             candles_dict[i].append(float(candle['mid'][i[0]]))
 df = pd.DataFrame(candles_dict)
+
+# TEST
+start = candles_dict['close'][0]
+best = {
+    'count': None,
+    'value': None
+}
+for n, i in enumerate(candles_dict['close']):
+    result = ((i-start)*10000)/(n + 1)
+    if not best['value'] or abs(result) > abs(best['value']):
+        best['count'] = n if result > 0 else -n
+        best['value'] = result
+print(best)
 
 # Add features to dataframe
 df['close_mean'] = df['close'].rolling(MA).mean()
@@ -51,7 +64,7 @@ for i in OHLC:
                 temp_list.append(1 if qv == n else 0)
             q_dict[f'{i}_q_{n}'].append(temp_list)
 
-print(pd.DataFrame(q_dict))
+# print(pd.DataFrame(q_dict))
 
 
 # for i in OHLC:
