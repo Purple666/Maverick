@@ -1,15 +1,22 @@
 import configparser
+from itertools import product
 
 import pandas as pd
 import numpy as np
 import oandapyV20
 import oandapyV20.endpoints.instruments as instruments
+from keras.utils import to_categorical
+from keras.models import Sequential
+from keras.layers import LSTM, SpatialDropout1D
+from keras.layers.core import Dense
+from keras.optimizers import Adam
+from keras.callbacks import EarlyStopping
 
 
 OHLC = ['open', 'high', 'low', 'close']
-MA = 2
-TIMESERIES_LEN = 4
-QUANTILES_NUM = 2
+MA = 50
+TIMESERIES_LEN = 50
+QUANTILES_NUM = 10
 
 # Config and connect 
 config = configparser.ConfigParser()
@@ -18,11 +25,12 @@ client = oandapyV20.API(access_token=config['oanda']['api_key'], environment='li
 
 # request candles
 candle_data = instruments.InstrumentsCandles(
-    instrument="USD_CAD", 
-    params={"count": "20", "granularity": "H1"}
+    instrument="AUD_CAD", 
+    params={"count": "5000", "granularity": "H1"}
 )
 client.request(candle_data)
 candles = candle_data.response['candles']
+print("Candles 1/5")
 
 # build dataframe
 candles_dict = {i: [] for i in OHLC}
@@ -31,19 +39,19 @@ for candle in candles:
         for i in OHLC:
             candles_dict[i].append(float(candle['mid'][i[0]]))
 df = pd.DataFrame(candles_dict)
+print("Build dataframe 2/5")
 
-# TEST
-start = candles_dict['close'][0]
-best = {
-    'count': None,
-    'value': None
-}
-for n, i in enumerate(candles_dict['close']):
-    result = ((i-start)*10000)/(n + 1)
-    if not best['value'] or abs(result) > abs(best['value']):
-        best['count'] = n if result > 0 else -n
-        best['value'] = result
-print(best)
+# y_train
+y_train = []
+for index, row in df.iterrows():
+    if row['close'] > row['open']:
+        y_train.append(2)
+    elif row['close'] < row['open']:
+        y_train.append(0)
+    else:
+        y_train.append(1)
+y_train = to_categorical(y_train)
+print("Build y_train 3/5")
 
 # Add features to dataframe
 df['close_mean'] = df['close'].rolling(MA).mean()
@@ -63,28 +71,65 @@ for i in OHLC:
             for qv in pd.qcut(pct_dict[f'{i}_pct'][ts:ts+TIMESERIES_LEN], QUANTILES_NUM, labels=False):
                 temp_list.append(1 if qv == n else 0)
             q_dict[f'{i}_q_{n}'].append(temp_list)
-
-# print(pd.DataFrame(q_dict))
-
-
-# for i in OHLC:
-#     print(pd.qcut(pct_dict[f'{i}_pct'], QUANTILES_NUM, labels=False), i)
-#     for n in range()
-
-# print(pd.qcut(pct_dict['open_pct'], 4, labels=False))
+print("Feature engineer 4/5")
 
 
-# print(df_pct.quantile([0.25, 0.5, 0.75]))
-# print(pct_dict['open_pct'])
+temp_df = pd.DataFrame(q_dict)
+x_train = []
+for _, row in temp_df.iterrows():
+    new_series = []
+    for num in range(len(row[0])):
+        new_row = []
+        for i in OHLC:
+            for n in range(QUANTILES_NUM):
+                new_row.append(row[f'{i}_q_{n}'][num])
+        new_series.append(new_row)
+    x_train.append(new_series)
+print("Finale Feature organization 5/5")
 
-# test_df = pd.DataFrame([[1, 1], [2, 100], [3, 100], [4, 100], [5, 12]], columns=['a', 'b'])
-# print(test_df.quantile([0.25, 0.5, 0.75]))
+# Run model
+x_train = np.array(x_train)[:-1]
+y_train = y_train[-len(x_train):]
 
-# df = pd.concat([df, df_pct], axis=1, sort=False)
-# print(df)
-# df = df.dropna().reset_index(drop=True)
+print("x_train shape:", x_train.shape)
+print("y_train shape:", y_train.shape)
 
-# if __name__ == '__main__':
-#     print(df)
-    # for index, row in df.iterrows():
-    #     print(row)
+worst = {
+    'val_loss': None,
+    'val_acc': None,
+    'params': None
+}
+best = {
+    'val_loss': None,
+    'val_acc': None,
+    'params': None
+}
+callbacks = [EarlyStopping(monitor='val_loss', patience=5)]
+for drop_out, lr in product(range(1, 9), range(0, 101, 10)):
+    if not lr:
+        continue
+    drop_out = drop_out/10
+    lr = lr/1000
+    model = Sequential()
+    model.add(LSTM(40, return_sequences=True, input_shape=(x_train.shape[1], x_train.shape[2])))
+    model.add(SpatialDropout1D(drop_out))
+    model.add(LSTM(80, return_sequences=True))
+    # model.add(SpatialDropout1D(drop_out))
+    # model.add(LSTM(40, return_sequences=True))
+    model.add(SpatialDropout1D(drop_out))
+    model.add(LSTM(40, return_sequences=False))
+    model.add(Dense(y_train.shape[1], activation="softmax"))
+    model.compile(loss='categorical_crossentropy', optimizer=Adam(lr=lr), metrics=['accuracy'])
+    history = model.fit(x_train, y_train, batch_size=200, epochs=100, validation_split=0.4, verbose=1, callbacks=callbacks)
+    result = {
+        'val_loss': history.history['val_loss'][-1],
+        'val_acc': history.history['val_acc'][-1],
+        'params': {'drop_out': drop_out, 'learning_rate': lr}
+    }
+    if not best['val_loss'] or best['val_loss'] > history.history['val_loss'][-1]:
+        best.update(result)
+    if not worst['val_loss'] or worst['val_loss'] < history.history['val_loss'][-1]:
+        worst.update(result)
+    print("current:", drop_out, lr)
+    print("worst:", worst)
+    print("best:", best)
