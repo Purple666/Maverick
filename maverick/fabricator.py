@@ -8,29 +8,8 @@ import oandapyV20.endpoints.instruments as instruments
 from keras.utils import to_categorical
 
 
-class Candles:
-    def __get__(self, instance, owner):
-        candle_data = instruments.InstrumentsCandles(
-            instrument=instance._instrument, 
-            params={
-                "count": str(instance._candle_count), 
-                "granularity": instance._granularity
-            }
-        )
-        instance._client.request(candle_data)
-        candles = candle_data.response['candles']
-        return [
-            [float(i['mid']['o']) for i in candles if i['complete']],
-            [float(i['mid']['h']) for i in candles if i['complete']],
-            [float(i['mid']['l']) for i in candles if i['complete']],
-            [float(i['mid']['c']) for i in candles if i['complete']]
-        ]
-
-
 class Fabricator:
-    candles = Candles()
-
-    def __init__(self, client, instrument, candle_count, granularity):
+    def __init__(self, client, instrument, granularity):
         assert isinstance(client, dict), "`client` must be dictionary with the key `file`, or `api_key`"
         if 'file' in client.keys() and 'api_key' not in client.keys():
             config = configparser.ConfigParser()
@@ -40,13 +19,29 @@ class Fabricator:
             api_key = client['api_key']
         self._client = oandapyV20.API(access_token=api_key, environment='live')
         self._instrument = instrument
-        self._candle_count = candle_count
         self._granularity = granularity
 
-    def x_y_train(self, time_series, look_forward, quantile_count, data_split=None):
+    def candles(self, candle_count):
+        candle_data = instruments.InstrumentsCandles(
+            instrument=self._instrument, 
+            params={
+                "count": str(candle_count), 
+                "granularity": self._granularity
+            }
+        )
+        self._client.request(candle_data)
+        candles = candle_data.response['candles']
+        return [
+            [float(i['mid']['o']) for i in candles if i['complete']],
+            [float(i['mid']['h']) for i in candles if i['complete']],
+            [float(i['mid']['l']) for i in candles if i['complete']],
+            [float(i['mid']['c']) for i in candles if i['complete']]
+        ]
+
+    def x_y_train(self, candle_count, time_series, look_forward, quantile_count, data_split=None):
         x_train = []
         y_train = []
-        candles = self.candles
+        candles = self.candles(candle_count)
         for series in range(len(candles[0])-time_series+1-look_forward):
             series_result = np.zeros((time_series, 0))
             dif = candles[3][series+time_series+look_forward-1] - candles[3][series+time_series-1]
@@ -106,9 +101,14 @@ class Fabricator:
         y_train = np.delete(y_train, val_rows, axis=0)
         return x_train, y_train, x_val, y_val
 
-    def x_train(self):
-        pass
+    def x_train(self, time_series, quantile_count):
+        candles = self.candles(time_series+1)
+        x_train = np.zeros((time_series, 0))
+        for i in candles:
+            result = to_categorical(pd.qcut(i[-time_series:], quantile_count, labels=False))
+            x_train = np.append(x_train, result, axis=1)
+        return x_train
 
 if __name__ == '__main__':
-    x = Fabricator({'file': 'env/oanda.ini'}, 'EUR_USD', 5000, 'M5')
-    x_train, y_train, x_val, y_val = x.x_y_train(48, 2, 6, data_split=0.2)
+    x = Fabricator({'file': 'env/oanda.ini'}, 'EUR_USD', 'M5')
+    print(x.x_train(48, 6).shape)
